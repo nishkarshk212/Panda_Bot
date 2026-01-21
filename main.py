@@ -187,48 +187,63 @@ async def apply_warning(context: ContextTypes.DEFAULT_TYPE, chat_id: int, target
         warnings_store[key] = 0
         return 3, True
     return count, False
-
 async def on_edited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.edited_message
     if not msg:
         return
+
     if msg.chat.type not in ("group", "supergroup"):
         return
+
+    if not msg.from_user or msg.from_user.is_bot:
+        return
+
     chat_id = msg.chat.id
-    user_id = msg.from_user.id if msg.from_user else None
-    if not user_id:
-        return
-    if msg.from_user and msg.from_user.is_bot:
-        return
+    user_id = msg.from_user.id
+
     admin = await is_admin(context, chat_id, user_id)
+
+    # Ignore admins completely (optional)
+    if admin:
+        return
+
+    # Delete edited message
     try:
         await context.bot.delete_message(chat_id, msg.message_id)
     except Exception:
         pass
-    if not admin:
-        count, muted = await apply_warning(context, chat_id, user_id)
-        if muted:
-            mention = f'<a href="tg://user?id={user_id}">{msg.from_user.first_name}</a>'
-            await context.bot.send_message(chat_id, f"{mention} auto-muted for 24h due to editing messages.", parse_mode=ParseMode.HTML)
-            try:
-                await context.bot.send_message(user_id, "You have been auto-muted for 24h due to editing messages.")
-            except Exception:
-                pass
-        else:
-            mention = f'<a href="tg://user?id={user_id}">{msg.from_user.first_name}</a>'
-            await context.bot.send_message(chat_id, f"{mention} warned for editing. Warnings: {count}/3", parse_mode=ParseMode.HTML)
-            try:
-                await context.bot.send_message(user_id, f"Your edited message was removed. Warnings: {count}/3")
-            except Exception:
-                pass
-    else:
-        mention = f'<a href="tg://user?id={user_id}">{msg.from_user.first_name}</a>'
-        await context.bot.send_message(chat_id, f"Admin warned for editing: {mention}", parse_mode=ParseMode.HTML)
+
+    count, muted = await apply_warning(context, chat_id, user_id)
+
+    name = escape(msg.from_user.first_name)
+    mention = f'<a href="tg://user?id={user_id}">{name}</a>'
+
+    if muted:
+        await context.bot.send_message(
+            chat_id,
+            f"{mention} auto-muted for 24h due to editing messages.",
+            parse_mode=ParseMode.HTML
+        )
         try:
-            await context.bot.send_message(user_id, "Your edited message was removed.")
+            await context.bot.send_message(
+                user_id,
+                "You have been auto-muted for 24h due to editing messages."
+            )
         except Exception:
             pass
-
+    else:
+        await context.bot.send_message(
+            chat_id,
+            f"{mention} warned for editing. Warnings: {count}/3",
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await context.bot.send_message(
+                user_id,
+                f"Your edited message was removed. Warnings: {count}/3"
+            )
+        except Exception:
+            pass
 async def resolve_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     if update.message and update.message.reply_to_message and update.message.reply_to_message.from_user:
         return update.message.reply_to_message.from_user.id
