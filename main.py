@@ -24,12 +24,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
-        "Admin commands:\n"
-        "/ban (reply) – Ban user\n"
-        "/mute (reply) – Mute user\n"
-        "/unmute (reply) – Unmute user\n"
-        "/warn (reply) – Add warning, auto-mute at 3\n"
-        "Features: welcome new members, auto delete links from non-admins."
+        "Commands:\n"
+        "/start – Activate bot\n"
+        "/help – Show this help\n"
+        "/status – Show bot permissions\n"
+        "/ban (reply | ID | @username | mention) – Ban user\n"
+        "/unban (reply | ID | @username | mention) – Unban user\n"
+        "/mute (reply | ID | @username | mention) – Mute user\n"
+        "/unmute (reply | ID | @username | mention) – Unmute user\n"
+        "/warn (reply | ID | @username | mention) – Add warning, auto-mute at 3\n"
+        "\n"
+        "Auto actions:\n"
+        "- Delete links in text/captions; warn non-admins, auto-mute at 3\n"
+        "- Delete edited messages; warn non-admins, auto-mute at 3\n"
+        "- Delete admin links/edits with notice\n"
+        "- Welcome new members; approve join requests"
     )
     await update.message.reply_text(text)
 
@@ -43,9 +52,9 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     admin_id = update.effective_user.id
     if not await is_admin(context, chat_id, admin_id):
         return
-    target_id = _target_from_reply(update)
+    target_id = await resolve_target_user_id(update, context)
     if not target_id:
-        await update.message.reply_text("Reply to a user to ban.")
+        await update.message.reply_text("Provide target by reply, mention, or user ID.")
         return
     await context.bot.ban_chat_member(chat_id, target_id)
     await update.message.reply_text("User banned.")
@@ -55,9 +64,9 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     admin_id = update.effective_user.id
     if not await is_admin(context, chat_id, admin_id):
         return
-    target_id = _target_from_reply(update)
+    target_id = await resolve_target_user_id(update, context)
     if not target_id:
-        await update.message.reply_text("Reply to a user to mute.")
+        await update.message.reply_text("Provide target by reply, mention, or user ID.")
         return
     perms = ChatPermissions(can_send_messages=False, can_send_audios=False, can_send_documents=False, can_send_photos=False, can_send_videos=False, can_send_video_notes=False, can_send_voice_notes=False, can_send_polls=False, can_add_web_page_previews=False, can_change_info=False, can_invite_users=False, can_pin_messages=False, can_manage_topics=False)
     await context.bot.restrict_chat_member(chat_id, target_id, permissions=perms)
@@ -81,9 +90,9 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     admin_id = update.effective_user.id
     if not await is_admin(context, chat_id, admin_id):
         return
-    target_id = _target_from_reply(update)
+    target_id = await resolve_target_user_id(update, context)
     if not target_id:
-        await update.message.reply_text("Reply to a user to warn.")
+        await update.message.reply_text("Provide target by reply, mention, or user ID.")
         return
     count, muted = await apply_warning(context, chat_id, target_id)
     admin_user = update.effective_user
@@ -94,6 +103,21 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(chat_id, f"{admin_mention} warned {target_mention}. Auto-muted for 24h.", parse_mode=ParseMode.HTML)
     else:
         await context.bot.send_message(chat_id, f"{admin_mention} warned {target_mention}. Warnings: {count}/3", parse_mode=ParseMode.HTML)
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    admin_id = update.effective_user.id
+    if not await is_admin(context, chat_id, admin_id):
+        return
+    target_id = await resolve_target_user_id(update, context)
+    if not target_id:
+        await update.message.reply_text("Provide target by reply, mention, or user ID.")
+        return
+    try:
+        await context.bot.unban_chat_member(chat_id, target_id, only_if_banned=True)
+        await update.message.reply_text("User unbanned.")
+    except Exception:
+        await update.message.reply_text("Failed to unban user.")
 
 async def greet_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -168,6 +192,8 @@ async def on_edited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.edited_message
     if not msg:
         return
+    if msg.chat.type not in ("group", "supergroup"):
+        return
     chat_id = msg.chat.id
     user_id = msg.from_user.id if msg.from_user else None
     if not user_id:
@@ -176,7 +202,7 @@ async def on_edited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     admin = await is_admin(context, chat_id, user_id)
     try:
-        await msg.delete()
+        await context.bot.delete_message(chat_id, msg.message_id)
     except Exception:
         pass
     if not admin:
@@ -195,6 +221,13 @@ async def on_edited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await context.bot.send_message(user_id, f"Your edited message was removed. Warnings: {count}/3")
             except Exception:
                 pass
+    else:
+        mention = f'<a href="tg://user?id={user_id}">{msg.from_user.first_name}</a>'
+        await context.bot.send_message(chat_id, f"Admin warned for editing: {mention}", parse_mode=ParseMode.HTML)
+        try:
+            await context.bot.send_message(user_id, "Your edited message was removed.")
+        except Exception:
+            pass
 
 async def resolve_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     if update.message and update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -234,6 +267,26 @@ async def resolve_target_user_id(update: Update, context: ContextTypes.DEFAULT_T
                     pass
     return None
 
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    me = await context.bot.get_me()
+    member = await context.bot.get_chat_member(chat.id, me.id)
+    status = member.status
+    lines = [f"Bot status: {status}"]
+    fields = [
+        ("can_delete_messages", "Delete messages"),
+        ("can_restrict_members", "Restrict members"),
+        ("can_invite_users", "Invite users"),
+        ("can_pin_messages", "Pin messages"),
+        ("can_manage_topics", "Manage topics"),
+        ("can_change_info", "Change info"),
+    ]
+    for key, label in fields:
+        val = getattr(member, key, None)
+        if val is not None:
+            lines.append(f"{label}: {'✅' if val else '❌'}")
+    await context.bot.send_message(chat.id, "\n".join(lines))
+
 def main() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -242,15 +295,17 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("warn", warn, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("status", status_cmd, filters=filters.ChatType.GROUPS))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, greet_new_members))
     app.add_handler(MessageHandler(filters.TEXT & (filters.Entity(MessageEntity.URL) | filters.Entity(MessageEntity.TEXT_LINK)) & filters.ChatType.GROUPS, delete_links))
     app.add_handler(MessageHandler(filters.CAPTION & (filters.CaptionEntity(MessageEntity.URL) | filters.CaptionEntity(MessageEntity.TEXT_LINK)) & filters.ChatType.GROUPS, delete_links))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS, delete_links))
     app.add_handler(ChatJoinRequestHandler(approve_join))
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, on_edited))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED & filters.ChatType.GROUPS, on_edited))
     print("Application started")
     app.run_polling(allowed_updates=["message", "edited_message", "chat_member", "my_chat_member", "chat_join_request"])
 
